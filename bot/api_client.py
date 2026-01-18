@@ -219,10 +219,14 @@ class CareConnectAPI:
                 error_msg = error.get('message', 'Booking failed')
                 details = error.get('details', {})
                 
+                # Log full error for debugging
+                logger.error(f'Booking API error: status={response.status_code}, data={data}')
+                
                 return {
                     'success': False,
                     'error_code': error_code,
                     'error': error_msg,
+                    'details': details,
                     'conflicting_activity': details.get('conflicting_activity'),
                     'alternatives': details.get('alternatives', []),
                 }
@@ -337,6 +341,360 @@ class CareConnectAPI:
             except Exception as e:
                 logger.error(f'Get dashboard stats error: {e}')
                 return {}
+    
+    # ==================== BOOKING FEEDBACK ENDPOINTS ====================
+    
+    async def submit_booking_feedback(
+        self,
+        token: str,
+        booking_id: str,
+        rating: int,
+        feedback_text: str = ''
+    ) -> dict:
+        """Submit feedback/rating for a completed booking."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    f'{self.base_url}/bookings/{booking_id}/feedback',
+                    json={
+                        'rating': rating,
+                        'feedback_text': feedback_text,
+                    },
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return {'success': True, **data.get('data', {})}
+                
+                error_msg = data.get('error', {}).get('message', 'Failed to submit feedback')
+                return {'success': False, 'error': error_msg}
+            except Exception as e:
+                logger.error(f'Submit feedback error: {e}')
+                return {'success': False, 'error': str(e)}
+    
+    # ==================== WAITLIST ENDPOINTS ====================
+    
+    async def get_participant_waitlist(self, token: str, participant_id: str) -> list:
+        """Get participant's waitlist entries."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.get(
+                    f'{self.base_url}/waitlist/participant/{participant_id}',
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return data.get('data', {}).get('entries', [])
+                
+                return []
+            except Exception as e:
+                logger.error(f'Get waitlist error: {e}')
+                return []
+    
+    async def accept_waitlist_offer(self, token: str, waitlist_id: str) -> dict:
+        """Accept a waitlist offer."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    f'{self.base_url}/waitlist/{waitlist_id}/accept',
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return {'success': True, **data.get('data', {})}
+                
+                error_msg = data.get('error', {}).get('message', 'Failed to accept offer')
+                return {'success': False, 'error': error_msg}
+            except Exception as e:
+                logger.error(f'Accept waitlist error: {e}')
+                return {'success': False, 'error': str(e)}
+    
+    async def decline_waitlist_offer(self, token: str, waitlist_id: str) -> dict:
+        """Decline a waitlist offer."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    f'{self.base_url}/waitlist/{waitlist_id}/decline',
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return {'success': True}
+                
+                return {'success': False}
+            except Exception as e:
+                logger.error(f'Decline waitlist error: {e}')
+                return {'success': False, 'error': str(e)}
+    
+    # ==================== VOLUNTEER ENDPOINTS ====================
+    
+    async def create_volunteer_profile(
+        self,
+        token: str,
+        user_id: str,
+        interests: list = None,
+        skills: list = None,
+        availability: dict = None
+    ) -> dict:
+        """Create a volunteer profile."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    f'{self.base_url}/volunteers',
+                    json={
+                        'user_id': user_id,
+                        'interests': interests or [],
+                        'skills': skills or [],
+                        'availability': availability or {},
+                    },
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code in [200, 201] and data.get('success'):
+                    return {'success': True, 'volunteer': data.get('data')}
+                
+                error_msg = data.get('error', {}).get('message', 'Failed to create volunteer profile')
+                return {'success': False, 'error': error_msg}
+            except Exception as e:
+                logger.error(f'Create volunteer profile error: {e}')
+                return {'success': False, 'error': str(e)}
+    
+    async def get_volunteer_assignments(
+        self,
+        token: str,
+        volunteer_id: str,
+        status: str = None
+    ) -> dict:
+        """Get volunteer's assignments, optionally filtered by status."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                params = {}
+                if status:
+                    params['status'] = status
+                
+                response = await client.get(
+                    f'{self.base_url}/volunteers/{volunteer_id}/assignments',
+                    params=params,
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return data.get('data', {})
+                
+                return {'assignments': [], 'grouped': {}}
+            except Exception as e:
+                logger.error(f'Get assignments error: {e}')
+                return {'assignments': [], 'grouped': {}}
+    
+    async def respond_to_assignment(
+        self,
+        token: str,
+        assignment_id: str,
+        response: str  # 'accepted' or 'declined'
+    ) -> dict:
+        """Accept or decline a volunteer assignment."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                resp = await client.put(
+                    f'{self.base_url}/volunteer-assignments/{assignment_id}/respond',
+                    json={'response': response},
+                    headers=self._get_headers(token)
+                )
+                data = resp.json()
+                
+                if resp.status_code == 200 and data.get('success'):
+                    return {'success': True, **data.get('data', {})}
+                
+                error_msg = data.get('error', {}).get('message', 'Failed to respond')
+                return {'success': False, 'error': error_msg}
+            except Exception as e:
+                logger.error(f'Respond to assignment error: {e}')
+                return {'success': False, 'error': str(e)}
+    
+    async def check_in_assignment(self, token: str, assignment_id: str) -> dict:
+        """Check in for a volunteer assignment."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    f'{self.base_url}/volunteer-assignments/{assignment_id}/check-in',
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return {'success': True, **data.get('data', {})}
+                
+                error_msg = data.get('error', {}).get('message', 'Failed to check in')
+                return {'success': False, 'error': error_msg}
+            except Exception as e:
+                logger.error(f'Check in error: {e}')
+                return {'success': False, 'error': str(e)}
+    
+    async def check_out_assignment(
+        self,
+        token: str,
+        assignment_id: str,
+        feedback: str = '',
+    ) -> dict:
+        """Check out from a volunteer assignment."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    f'{self.base_url}/volunteer-assignments/{assignment_id}/check-out',
+                    json={'volunteer_feedback': feedback},
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return {'success': True, **data.get('data', {})}
+                
+                error_msg = data.get('error', {}).get('message', 'Failed to check out')
+                return {'success': False, 'error': error_msg}
+            except Exception as e:
+                logger.error(f'Check out error: {e}')
+                return {'success': False, 'error': str(e)}
+    
+    async def get_volunteer_stats(self, token: str, volunteer_id: str) -> dict:
+        """Get volunteer's statistics and achievements."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.get(
+                    f'{self.base_url}/volunteers/{volunteer_id}/stats',
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return data.get('data', {})
+                
+                return {}
+            except Exception as e:
+                logger.error(f'Get volunteer stats error: {e}')
+                return {}
+    
+    async def get_leaderboard(self, token: str, limit: int = 10, sort_by: str = 'total_hours') -> list:
+        """Get volunteer leaderboard."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.get(
+                    f'{self.base_url}/volunteers/leaderboard',
+                    params={'limit': limit, 'sort_by': sort_by},
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return data.get('data', {}).get('leaderboard', [])
+                
+                return []
+            except Exception as e:
+                logger.error(f'Get leaderboard error: {e}')
+                return []
+    
+    async def get_activities_needing_volunteers(self, token: str, limit: int = 10) -> list:
+        """Get activities that need volunteers."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.get(
+                    f'{self.base_url}/activities',
+                    params={'limit': limit},
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    activities = data.get('data', {}).get('activities', [])
+                    # Filter to those needing volunteers
+                    return [
+                        a for a in activities 
+                        if (a.get('current_volunteers', 0) < a.get('max_volunteers', 0))
+                    ]
+                
+                return []
+            except Exception as e:
+                logger.error(f'Get activities needing volunteers error: {e}')
+                return []
+    
+    # ==================== CAREGIVER ENDPOINTS ====================
+    
+    async def get_caregiver_participants(self, token: str, caregiver_id: str) -> list:
+        """Get participants linked to a caregiver."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.get(
+                    f'{self.base_url}/caregivers/{caregiver_id}/participants',
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return data.get('data', {}).get('participants', [])
+                
+                return []
+            except Exception as e:
+                logger.error(f'Get caregiver participants error: {e}')
+                return []
+    
+    async def link_participant_to_caregiver(
+        self,
+        token: str,
+        caregiver_id: str,
+        participant_id: str = None,
+        participant_email: str = None,
+        is_primary: bool = False
+    ) -> dict:
+        """Link a participant to a caregiver."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                body = {
+                    'caregiver_id': caregiver_id,
+                    'is_primary': is_primary,
+                }
+                if participant_id:
+                    body['participant_id'] = participant_id
+                if participant_email:
+                    body['participant_email'] = participant_email
+                
+                response = await client.post(
+                    f'{self.base_url}/participant-caregivers/link',
+                    json=body,
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code in [200, 201] and data.get('success'):
+                    return {'success': True, **data.get('data', {})}
+                
+                error_msg = data.get('error', {}).get('message', 'Failed to link participant')
+                return {'success': False, 'error': error_msg}
+            except Exception as e:
+                logger.error(f'Link participant error: {e}')
+                return {'success': False, 'error': str(e)}
+    
+    async def get_participant_bookings(self, token: str, participant_id: str) -> list:
+        """Get bookings for a specific participant (for caregivers)."""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.get(
+                    f'{self.base_url}/participants/{participant_id}',
+                    headers=self._get_headers(token)
+                )
+                data = response.json()
+                
+                if response.status_code == 200 and data.get('success'):
+                    return data.get('data', {}).get('upcoming_bookings', [])
+                
+                return []
+            except Exception as e:
+                logger.error(f'Get participant bookings error: {e}')
+                return []
     
     # ==================== USERS ENDPOINTS ====================
     

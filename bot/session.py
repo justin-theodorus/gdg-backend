@@ -131,3 +131,90 @@ class UserSession:
     def get_poster_id(context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
         """Get poster file ID."""
         return context.user_data.get('poster_id')
+    
+    # ==================== VOLUNTEER SESSION HELPERS ====================
+    
+    @staticmethod
+    def get_volunteer_id(context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
+        """Get volunteer ID from session."""
+        user = context.user_data.get('user', {})
+        return user.get('volunteer_id')
+    
+    @staticmethod
+    def set_volunteer_data(context: ContextTypes.DEFAULT_TYPE, key: str, value):
+        """Set temporary volunteer registration data."""
+        if 'volunteer_reg' not in context.user_data:
+            context.user_data['volunteer_reg'] = {}
+        context.user_data['volunteer_reg'][key] = value
+    
+    @staticmethod
+    def get_volunteer_data(context: ContextTypes.DEFAULT_TYPE, key: str, default=None):
+        """Get temporary volunteer registration data."""
+        return context.user_data.get('volunteer_reg', {}).get(key, default)
+    
+    @staticmethod
+    def clear_volunteer_data(context: ContextTypes.DEFAULT_TYPE):
+        """Clear temporary volunteer registration data."""
+        context.user_data.pop('volunteer_reg', None)
+    
+    # ==================== CAREGIVER SESSION HELPERS ====================
+    
+    @staticmethod
+    def get_selected_participant_id(context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
+        """Get currently selected participant ID (for caregiver actions)."""
+        return context.user_data.get('selected_participant_id')
+    
+    @staticmethod
+    def set_selected_participant_id(context: ContextTypes.DEFAULT_TYPE, participant_id: str):
+        """Set currently selected participant ID."""
+        context.user_data['selected_participant_id'] = participant_id
+    
+    @staticmethod
+    def clear_selected_participant(context: ContextTypes.DEFAULT_TYPE):
+        """Clear selected participant."""
+        context.user_data.pop('selected_participant_id', None)
+    
+    # ==================== RATING FLOW HELPERS ====================
+    
+    @staticmethod
+    def set_rating_booking_id(context: ContextTypes.DEFAULT_TYPE, booking_id: str):
+        """Set booking ID for rating flow."""
+        context.user_data['rating_booking_id'] = booking_id
+    
+    @staticmethod
+    def get_rating_booking_id(context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
+        """Get booking ID for rating flow."""
+        return context.user_data.get('rating_booking_id')
+    
+    @staticmethod
+    def set_rating_value(context: ContextTypes.DEFAULT_TYPE, rating: int):
+        """Set rating value in flow."""
+        context.user_data['rating_value'] = rating
+    
+    @staticmethod
+    def get_rating_value(context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
+        """Get rating value from flow."""
+        return context.user_data.get('rating_value')
+    
+    @staticmethod
+    def clear_rating_data(context: ContextTypes.DEFAULT_TYPE):
+        """Clear rating flow data."""
+        context.user_data.pop('rating_booking_id', None)
+        context.user_data.pop('rating_value', None)
+    
+    # ==================== CHECKOUT FLOW HELPERS ====================
+    
+    @staticmethod
+    def set_checkout_assignment_id(context: ContextTypes.DEFAULT_TYPE, assignment_id: str):
+        """Set assignment ID for checkout flow."""
+        context.user_data['checkout_assignment_id'] = assignment_id
+    
+    @staticmethod
+    def get_checkout_assignment_id(context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
+        """Get assignment ID for checkout flow."""
+        return context.user_data.get('checkout_assignment_id')
+    
+    @staticmethod
+    def clear_checkout_data(context: ContextTypes.DEFAULT_TYPE):
+        """Clear checkout flow data."""
+        context.user_data.pop('checkout_assignment_id', None)

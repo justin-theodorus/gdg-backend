@@ -31,11 +31,52 @@ SERVICE_ACCOUNT_FILE = os.getenv('SERVICE_ACCOUNT_FILE', str(BASE_DIR / 'service
 # Gemini AI Configuration (for Edge Function fallback)
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 
-# Conversation States
+# Conversation States - Registration
 INPUT_EMAIL = 0
 INPUT_PASSWORD = 1
 INPUT_CARE_NAME = 2
 UPLOAD_POSTER = 3
+
+# Conversation States - Volunteer Registration
+INPUT_VOLUNTEER_INTERESTS = 4
+INPUT_VOLUNTEER_SKILLS = 5
+INPUT_VOLUNTEER_AVAILABILITY = 6
+
+# Conversation States - Rating Flow
+RATING_SELECT_STARS = 7
+RATING_INPUT_FEEDBACK = 8
+
+# Conversation States - Checkout Flow
+CHECKOUT_INPUT_FEEDBACK = 9
+
+# Conversation States - Caregiver Linking
+INPUT_PARTICIPANT_EMAIL = 10
+
+# Available Interests for Volunteers
+VOLUNTEER_INTERESTS = [
+    ('sports', '⚽ Sports'),
+    ('arts', '🎨 Arts & Crafts'),
+    ('music', '🎵 Music'),
+    ('cooking', '🍳 Cooking'),
+    ('tech', '💻 Technology'),
+    ('education', '📚 Education'),
+    ('wellness', '🧘 Wellness'),
+    ('social', '🎉 Social Events'),
+]
+
+# Available Skills for Volunteers
+VOLUNTEER_SKILLS = [
+    ('first_aid', '🏥 First Aid'),
+    ('teaching', '👨‍🏫 Teaching'),
+    ('driving', '🚗 Driving'),
+    ('translation', '🌐 Translation'),
+    ('photography', '📷 Photography'),
+    ('event_planning', '📋 Event Planning'),
+]
+
+# Days of the week for availability
+DAYS_OF_WEEK = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+TIME_SLOTS = ['morning', 'afternoon', 'evening']
 
 # Validate required configuration
 def validate_config():
