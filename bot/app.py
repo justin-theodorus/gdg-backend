@@ -1,0 +1,783 @@
+"""
+CareConnect Hub Telegram Bot
+Integrated with the backend API for activity registration.
+"""
+import os
+import logging
+import base64
+import dateparser
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ConversationHandler
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+# Local imports
+from config import (
+    TELEGRAM_TOKEN, ADMIN_TELEGRAM_ID, BACKEND_API_URL,
+    SUPABASE_URL, SUPABASE_ANON_KEY, GOOGLE_CALENDAR_ID,
+    SERVICE_ACCOUNT_FILE, INPUT_EMAIL, INPUT_PASSWORD, INPUT_CARE_NAME, UPLOAD_POSTER,
+    validate_config
+)
+from api_client import CareConnectAPI
+from session import UserSession
+
+# ================= 1. CONFIGURATION =================
+
+# Validate configuration on startup
+validate_config()
+
+# Path Setup
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Initialize API Client
+api = CareConnectAPI(
+    base_url=BACKEND_API_URL,
+    supabase_url=SUPABASE_URL,
+    supabase_key=SUPABASE_ANON_KEY
+)
+
+# Google Calendar Setup (kept for calendar sync)
+SCOPES = ['https://www.googleapis.com/auth/calendar']
+calendar_service = None
+
+try:
+    service_account_path = os.path.join(BASE_DIR, SERVICE_ACCOUNT_FILE)
+    if os.path.exists(service_account_path):
+        creds = service_account.Credentials.from_service_account_file(service_account_path, scopes=SCOPES)
+        calendar_service = build('calendar', 'v3', credentials=creds)
+        logging.info("✅ Google Calendar service initialized")
+    else:
+        logging.warning("⚠️ Service account file not found, Google Calendar sync disabled")
+except Exception as e:
+    logging.warning(f"⚠️ Google Calendar setup failed: {e}")
+
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
+# ================= 2. GOOGLE CALENDAR HELPERS =================
+
+def create_google_calendar_event(event_data: dict) -> str | None:
+    """Creates event on Master Calendar."""
+    if not calendar_service:
+        logging.warning("Calendar service not available")
+        return None
+    
+    date_str = event_data.get('datetime', '')
+    dt = dateparser.parse(date_str, settings={'PREFER_DATES_FROM': 'future', 'DATE_ORDER': 'DMY'})
+    
+    if not dt:
+        dt = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(days=1)
+
+    start_time = dt.isoformat()
+    end_time = (dt + timedelta(hours=2)).isoformat()
+
+    event_body = {
+        'summary': event_data['name'],
+        'location': event_data.get('location', ''),
+        'description': event_data.get('summary', ''),
+        'start': {'dateTime': start_time, 'timeZone': 'Asia/Singapore'},
+        'end': {'dateTime': end_time, 'timeZone': 'Asia/Singapore'},
+        'guestsCanInviteOthers': False
+    }
+
+    try:
+        event = calendar_service.events().insert(calendarId=GOOGLE_CALENDAR_ID, body=event_body).execute()
+        return event['id']
+    except Exception as e:
+        logging.error(f"Calendar create error: {e}")
+        return None
+
+def add_attendee_to_event(google_event_id: str, user_email: str) -> bool:
+    """Adds user to Google Calendar event."""
+    if not calendar_service:
+        return False
+    
+    try:
+        event = calendar_service.events().get(calendarId=GOOGLE_CALENDAR_ID, eventId=google_event_id).execute()
+        attendees = event.get('attendees', [])
+        
+        # Check if already in list to avoid duplicates
+        if any(a.get('email') == user_email for a in attendees):
+            return True
+            
+        attendees.append({'email': user_email})
+        
+        calendar_service.events().patch(
+            calendarId=GOOGLE_CALENDAR_ID, eventId=google_event_id,
+            body={'attendees': attendees}, sendUpdates='all'
+        ).execute()
+        return True
+    except Exception as e:
+        logging.error(f"Calendar Add Error: {e}")
+        return False
+
+# ================= 3. MENUS & HANDLERS =================
+
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sends the Persistent Bottom Menu based on user state."""
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+
+    # Clean up inline keyboard if clicked
+    if update.callback_query:
+        await update.callback_query.answer()
+    
+    # 1. ADMIN MENU
+    if user.id == ADMIN_TELEGRAM_ID:
+        keyboard = [[KeyboardButton("📤 Upload Poster"), KeyboardButton("📊 View Stats")]]
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        await context.bot.send_message(chat_id=chat_id, text="👑 <b>Admin Dashboard</b>", reply_markup=markup, parse_mode='HTML')
+        return ConversationHandler.END
+
+    # 2. Try to login with Telegram ID via API
+    result = await api.login_with_telegram(str(user.id))
+    
+    if result.get('found') and result.get('user'):
+        # User exists - store session and show menu
+        UserSession.login(context, result['user'], result['token'])
+        
+        keyboard = [[KeyboardButton("📅 Browse Events")], [KeyboardButton("👤 My Profile"), KeyboardButton("❓ Help")]]
+        markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        name = result['user'].get('first_name', 'there')
+        await context.bot.send_message(chat_id=chat_id, text=f"👋 <b>Welcome back, {name}!</b>", reply_markup=markup, parse_mode='HTML')
+        return ConversationHandler.END
+    
+    # 3. NEW USER - Show registration options
+    keyboard = [
+        [InlineKeyboardButton("🏃 I am a Participant", callback_data="role_participant")],
+        [InlineKeyboardButton("🤝 I am a Caregiver", callback_data="role_caregiver")]
+    ]
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="👋 <b>Welcome to CareConnect Hub!</b>\n\nWho are you?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+    return ConversationHandler.END
+
+# --- TRAFFIC CONTROLLER ---
+
+async def handle_menu_clicks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle bottom menu button clicks."""
+    text = update.message.text
+    
+    if text == "📅 Browse Events":
+        await browse_events(update, context)
+    elif text == "📤 Upload Poster":
+        return await admin_start_upload(update, context)
+    elif text == "👤 My Profile":
+        await show_profile(update, context)
+    elif text == "📊 View Stats":
+        await show_stats(update, context)
+    elif text == "❓ Help":
+        await update.message.reply_text(
+            "❓ <b>Help</b>\n\n"
+            "• Use <b>Browse Events</b> to see upcoming activities\n"
+            "• Click on an event to join\n"
+            "• Your calendar will be updated automatically\n\n"
+            "Need more help? Contact the admin.",
+            parse_mode='HTML'
+        )
+
+async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user profile."""
+    if not UserSession.is_authenticated(context):
+        await update.message.reply_text("⚠️ Not logged in. Type /start to register.")
+        return
+    
+    user = UserSession.get_user(context)
+    name = UserSession.get_name(context)
+    email = user.get('email', 'Not set')
+    role = user.get('role', 'Unknown').title()
+    
+    await update.message.reply_text(
+        f"👤 <b>Your Profile</b>\n\n"
+        f"<b>Name:</b> {name}\n"
+        f"<b>Email:</b> {email}\n"
+        f"<b>Role:</b> {role}",
+        parse_mode='HTML'
+    )
+
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show dashboard stats (admin only)."""
+    if update.effective_user.id != ADMIN_TELEGRAM_ID:
+        return
+    
+    token = UserSession.get_token(context)
+    if not token:
+        # Admin needs to login via API too
+        result = await api.login_with_telegram(str(update.effective_user.id))
+        if result.get('found'):
+            UserSession.login(context, result['user'], result['token'])
+            token = result['token']
+    
+    if token:
+        stats = await api.get_dashboard_stats(token)
+        if stats:
+            await update.message.reply_text(
+                f"📊 <b>Dashboard Stats</b>\n\n"
+                f"📝 Total Registrations: {stats.get('total_registrations', 0)}\n"
+                f"👥 Unique Participants: {stats.get('unique_participants', 0)}\n"
+                f"🙋 Active Volunteers: {stats.get('active_volunteers', 0)}\n"
+                f"⭐ Avg Satisfaction: {stats.get('average_satisfaction', 0):.1f}\n"
+                f"📅 Total Activities: {stats.get('total_activities', 0)}",
+                parse_mode='HTML'
+            )
+            return
+    
+    await update.message.reply_text("📊 <b>Stats:</b> Unable to fetch stats.", parse_mode='HTML')
+
+# --- REGISTRATION ---
+
+async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the registration flow."""
+    query = update.callback_query
+    await query.answer()
+    
+    role = "participant" if query.data == "role_participant" else "caregiver"
+    UserSession.set_registration_data(context, 'role', role)
+    
+    role_display = "Participant" if role == "participant" else "Caregiver"
+    await query.edit_message_text(
+        f"✅ Selected: <b>{role_display}</b>\n\n"
+        f"📧 Please enter your <b>email address</b>:",
+        parse_mode='HTML'
+    )
+    return INPUT_EMAIL
+
+async def save_email(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save email and ask for password."""
+    email = update.message.text.strip()
+    
+    if "@" not in email or "." not in email:
+        await update.message.reply_text("⚠️ Invalid email format. Please try again:")
+        return INPUT_EMAIL
+    
+    UserSession.set_registration_data(context, 'email', email)
+    
+    await update.message.reply_text(
+        "🔐 Create a <b>password</b> (at least 8 characters):",
+        parse_mode='HTML'
+    )
+    return INPUT_PASSWORD
+
+async def save_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save password and complete registration (or ask for care name)."""
+    password = update.message.text.strip()
+    
+    if len(password) < 8:
+        await update.message.reply_text("⚠️ Password must be at least 8 characters. Try again:")
+        return INPUT_PASSWORD
+    
+    UserSession.set_registration_data(context, 'password', password)
+    
+    role = UserSession.get_registration_data(context, 'role')
+    
+    if role == "caregiver":
+        await update.message.reply_text(
+            "🤝 Who are you caring for? (Enter their name):",
+            parse_mode='HTML'
+        )
+        return INPUT_CARE_NAME
+    
+    # Complete registration for participant
+    return await complete_registration(update, context)
+
+async def save_caregiver_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save caregiver's care recipient name and complete registration."""
+    care_name = update.message.text.strip()
+    UserSession.set_registration_data(context, 'care_for', care_name)
+    
+    return await complete_registration(update, context)
+
+async def complete_registration(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Complete the registration by calling the API."""
+    user = update.effective_user
+    
+    email = UserSession.get_registration_data(context, 'email')
+    password = UserSession.get_registration_data(context, 'password')
+    role = UserSession.get_registration_data(context, 'role')
+    
+    msg = await update.message.reply_text("⏳ Creating your account...")
+    
+    result = await api.register_with_telegram(
+        telegram_id=str(user.id),
+        email=email,
+        password=password,
+        first_name=user.first_name or 'User',
+        last_name=user.last_name or '',
+        role=role
+    )
+    
+    if result.get('success'):
+        UserSession.login(context, result['user'], result['token'])
+        UserSession.clear_registration_data(context)
+        
+        await msg.edit_text("✅ <b>Registration Complete!</b>\n\nYou can now browse and join events.", parse_mode='HTML')
+        await show_main_menu(update, context)
+        return ConversationHandler.END
+    
+    error_msg = result.get('error', 'Registration failed')
+    await msg.edit_text(f"❌ <b>Registration Failed</b>\n\n{error_msg}", parse_mode='HTML')
+    return ConversationHandler.END
+
+# --- EVENT BROWSING ---
+
+async def browse_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Browse upcoming events from the API."""
+    chat_id = update.effective_chat.id
+    
+    if not UserSession.is_authenticated(context):
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ Please /start to login first.")
+        return
+    
+    token = UserSession.get_token(context)
+    activities = await api.get_activities(token, limit=10, has_availability=False)
+    
+    if not activities:
+        await context.bot.send_message(chat_id=chat_id, text="🚫 No upcoming events at the moment.")
+        return
+    
+    keyboard = []
+    for activity in activities:
+        # Format date nicely
+        start_dt = activity.get('start_datetime', '')
+        try:
+            dt = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
+            date_str = dt.strftime('%d %b %H:%M')
+        except:
+            date_str = start_dt[:16] if start_dt else 'TBA'
+        
+        title = activity.get('title', 'Untitled')
+        spots = activity.get('available_spots', 0)
+        spot_text = f"🟢 {spots} spots" if spots > 0 else "🔴 Full"
+        
+        btn_text = f"👉 {title} ({date_str}) {spot_text}"
+        callback = f"activity_{activity['id']}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="📅 <b>Upcoming Events</b>\n\nClick an event to see details and join:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+
+async def show_activity_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show activity details and join button."""
+    query = update.callback_query
+    await query.answer()
+    
+    activity_id = query.data.replace('activity_', '')
+    
+    if not UserSession.is_authenticated(context):
+        await query.edit_message_text("⚠️ Please /start to login first.")
+        return
+    
+    token = UserSession.get_token(context)
+    activity = await api.get_activity(token, activity_id)
+    
+    if not activity:
+        await query.edit_message_text("❌ Activity not found.")
+        return
+    
+    # Format details
+    title = activity.get('title', 'Untitled')
+    description = activity.get('description', 'No description')
+    location = activity.get('location', 'TBA')
+    
+    start_dt = activity.get('start_datetime', '')
+    try:
+        dt = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
+        date_str = dt.strftime('%A, %d %B %Y at %H:%M')
+    except:
+        date_str = start_dt
+    
+    capacity = activity.get('capacity', 0)
+    current = activity.get('current_bookings', 0)
+    available = capacity - current
+    
+    text = (
+        f"📌 <b>{title}</b>\n\n"
+        f"📝 {description}\n\n"
+        f"📅 {date_str}\n"
+        f"📍 {location}\n"
+        f"👥 Spots: {current}/{capacity}"
+    )
+    
+    if available > 0:
+        text += f" ({available} available)"
+    else:
+        text += " (Waitlist available)"
+    
+    keyboard = [
+        [InlineKeyboardButton("✅ Join This Event", callback_data=f"join_{activity_id}")],
+        [InlineKeyboardButton("◀️ Back to Events", callback_data="back_to_events")]
+    ]
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+
+async def handle_back_to_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle back button to return to events list."""
+    query = update.callback_query
+    await query.answer()
+    
+    if not UserSession.is_authenticated(context):
+        await query.edit_message_text("⚠️ Please /start to login first.")
+        return
+    
+    token = UserSession.get_token(context)
+    activities = await api.get_activities(token, limit=10, has_availability=False)
+    
+    if not activities:
+        await query.edit_message_text("🚫 No upcoming events at the moment.")
+        return
+    
+    keyboard = []
+    for activity in activities:
+        start_dt = activity.get('start_datetime', '')
+        try:
+            dt = datetime.fromisoformat(start_dt.replace('Z', '+00:00'))
+            date_str = dt.strftime('%d %b %H:%M')
+        except:
+            date_str = start_dt[:16] if start_dt else 'TBA'
+        
+        title = activity.get('title', 'Untitled')
+        spots = activity.get('available_spots', 0)
+        spot_text = f"🟢 {spots} spots" if spots > 0 else "🔴 Full"
+        
+        btn_text = f"👉 {title} ({date_str}) {spot_text}"
+        callback = f"activity_{activity['id']}"
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=callback)])
+    
+    await query.edit_message_text(
+        "📅 <b>Upcoming Events</b>\n\nClick an event to see details and join:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+
+# --- JOIN HANDLER ---
+
+async def join_event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle joining an event."""
+    query = update.callback_query
+    await query.answer()
+    
+    activity_id = query.data.replace('join_', '')
+    user_id = query.from_user.id
+    chat_id = update.effective_chat.id
+    
+    if not UserSession.is_authenticated(context):
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ <b>Error:</b> Please /start to register first.",
+            parse_mode='HTML'
+        )
+        return
+    
+    token = UserSession.get_token(context)
+    participant_id = UserSession.get_participant_id(context)
+    
+    if not participant_id:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="⚠️ <b>Error:</b> Only participants can join events. Please register as a participant.",
+            parse_mode='HTML'
+        )
+        return
+    
+    # Create booking via API
+    msg = await context.bot.send_message(chat_id=chat_id, text="⏳ Processing your registration...")
+    
+    result = await api.create_booking(token, activity_id, participant_id)
+    
+    if result.get('success'):
+        status = result.get('status', 'confirmed')
+        
+        if status == 'waitlisted':
+            position = result.get('waitlist_position', '?')
+            await msg.edit_text(
+                f"📋 <b>Added to Waitlist</b>\n\n"
+                f"The event is currently full. You are #{position} on the waitlist.\n"
+                f"We'll notify you if a spot opens up!",
+                parse_mode='HTML'
+            )
+        else:
+            # Get activity details for calendar sync
+            activity = await api.get_activity(token, activity_id)
+            
+            # Try to add to Google Calendar
+            calendar_synced = False
+            if activity and activity.get('google_calendar_event_id'):
+                email = UserSession.get_email(context)
+                if email:
+                    calendar_synced = add_attendee_to_event(activity['google_calendar_event_id'], email)
+            
+            calendar_msg = "\n\n📅 Check your Google Calendar!" if calendar_synced else ""
+            
+            await msg.edit_text(
+                f"✅ <b>Confirmed!</b>\n\n"
+                f"You're registered for this event.{calendar_msg}",
+                parse_mode='HTML'
+            )
+    else:
+        error_code = result.get('error_code', '')
+        error_msg = result.get('error', 'Registration failed')
+        
+        if error_code == 'BOOKING_CONFLICT':
+            conflict = result.get('conflicting_activity', {})
+            conflict_title = conflict.get('title', 'another event')
+            
+            alternatives = result.get('alternatives', [])
+            alt_text = ""
+            if alternatives:
+                alt_text = "\n\n<b>Alternatives:</b>\n"
+                for alt in alternatives[:3]:
+                    alt_text += f"• {alt.get('title')}\n"
+            
+            await msg.edit_text(
+                f"⚠️ <b>Time Conflict</b>\n\n"
+                f"You're already registered for \"{conflict_title}\" at this time.{alt_text}",
+                parse_mode='HTML'
+            )
+        elif error_code == 'ALREADY_REGISTERED':
+            await msg.edit_text(
+                "ℹ️ <b>Already Registered</b>\n\nYou're already registered for this event!",
+                parse_mode='HTML'
+            )
+        else:
+            await msg.edit_text(f"❌ <b>Registration Failed</b>\n\n{error_msg}", parse_mode='HTML')
+
+# --- ADMIN UPLOAD & BROADCAST ---
+
+async def admin_start_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start poster upload flow (admin only)."""
+    chat_id = update.effective_chat.id
+    
+    if update.effective_user.id != ADMIN_TELEGRAM_ID:
+        return ConversationHandler.END
+    
+    if update.callback_query:
+        await update.callback_query.answer()
+    
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text="📤 <b>Upload Mode</b>\n\nSend me the event poster image.",
+        parse_mode='HTML'
+    )
+    return UPLOAD_POSTER
+
+async def handle_poster(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process poster image with AI extraction."""
+    user = update.effective_user
+    if user.id != ADMIN_TELEGRAM_ID:
+        return ConversationHandler.END
+    
+    msg = await update.message.reply_text("🤖 <b>AI is reading the poster...</b>", parse_mode='HTML')
+    
+    # Save file ID for broadcasting later
+    photo_file_id = update.message.photo[-1].file_id
+    UserSession.set_poster_id(context, photo_file_id)
+    
+    # Download photo
+    photo_file = await update.message.photo[-1].get_file()
+    file_path = os.path.join(BASE_DIR, "poster.jpg")
+    await photo_file.download_to_drive(file_path)
+    
+    # Read and encode image
+    with open(file_path, 'rb') as f:
+        image_base64 = base64.b64encode(f.read()).decode('utf-8')
+    
+    # Call Edge Function for extraction
+    result = await api.extract_poster(image_base64)
+    
+    if not result.get('success') and not result.get('name'):
+        # Try using the raw response if it has the expected fields
+        if 'name' in result:
+            data = result
+        else:
+            await msg.edit_text(f"❌ <b>Extraction Failed</b>\n\n{result.get('error', 'Unknown error')}", parse_mode='HTML')
+            return ConversationHandler.END
+    else:
+        data = result
+    
+    UserSession.set_draft(context, data)
+    
+    text = (
+        f"<b>Confirm Event Details:</b>\n\n"
+        f"📌 <b>{data.get('name', 'Untitled')}</b>\n"
+        f"🕒 {data.get('datetime', 'TBA')}\n"
+        f"📍 {data.get('location', 'TBA')}\n\n"
+        f"📝 {data.get('summary', 'No description')}"
+    )
+    
+    buttons = [
+        [InlineKeyboardButton("✅ Create & Broadcast", callback_data="confirm_post")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_post")]
+    ]
+    
+    await msg.edit_text(text, parse_mode='HTML', reply_markup=InlineKeyboardMarkup(buttons))
+    return UPLOAD_POSTER
+
+async def admin_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirm and create the event, then broadcast."""
+    query = update.callback_query
+    await query.answer()
+    chat_id = update.effective_chat.id
+    
+    if query.data == "cancel_post":
+        UserSession.clear_draft(context)
+        await context.bot.send_message(chat_id=chat_id, text="❌ Cancelled.")
+        await show_main_menu(update, context)
+        return ConversationHandler.END
+    
+    data = UserSession.get_draft(context)
+    poster_id = UserSession.get_poster_id(context)
+    
+    if not data:
+        await context.bot.send_message(chat_id=chat_id, text="❌ No draft data found.")
+        return ConversationHandler.END
+    
+    await context.bot.send_message(chat_id=chat_id, text="⏳ Creating event and broadcasting...")
+    
+    try:
+        # 1. Create Google Calendar event
+        g_id = create_google_calendar_event(data)
+        
+        # 2. Parse datetime for API
+        date_str = data.get('datetime', '')
+        dt = dateparser.parse(date_str, settings={'PREFER_DATES_FROM': 'future', 'DATE_ORDER': 'DMY'})
+        if not dt:
+            dt = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        
+        start_datetime = dt.isoformat()
+        end_datetime = (dt + timedelta(hours=2)).isoformat()
+        
+        # 3. Create activity via API (need admin token)
+        admin_result = await api.login_with_telegram(str(ADMIN_TELEGRAM_ID))
+        if admin_result.get('found'):
+            token = admin_result['token']
+            
+            activity_data = {
+                'title': data.get('name', 'Untitled Event'),
+                'description': data.get('summary', ''),
+                'start_datetime': start_datetime,
+                'end_datetime': end_datetime,
+                'location': data.get('location', 'TBA'),
+                'capacity': 50,  # Default capacity
+                'google_calendar_event_id': g_id,
+            }
+            
+            api_result = await api.create_activity(token, activity_data)
+            
+            if api_result.get('success'):
+                activity = api_result.get('activity', {})
+                activity_id = activity.get('id')
+                
+                # 4. Broadcast to all users with telegram_id
+                users = await api.get_all_users_with_telegram(token)
+                
+                broadcast_caption = (
+                    f"🎉 <b>NEW EVENT: {data.get('name')}</b>\n\n"
+                    f"📅 {data.get('datetime')}\n"
+                    f"📍 {data.get('location')}\n\n"
+                    f"{data.get('summary', '')}\n\n"
+                    f"👇 <b>Click below to Join!</b>"
+                )
+                
+                join_btn = [[InlineKeyboardButton("🙋 Join Now", callback_data=f"activity_{activity_id}")]]
+                
+                count = 0
+                for user_row in users:
+                    telegram_id = user_row.get('telegram_id')
+                    if telegram_id and telegram_id != str(ADMIN_TELEGRAM_ID):
+                        try:
+                            if poster_id:
+                                await context.bot.send_photo(
+                                    chat_id=telegram_id,
+                                    photo=poster_id,
+                                    caption=broadcast_caption,
+                                    reply_markup=InlineKeyboardMarkup(join_btn),
+                                    parse_mode='HTML'
+                                )
+                            else:
+                                await context.bot.send_message(
+                                    chat_id=telegram_id,
+                                    text=broadcast_caption,
+                                    reply_markup=InlineKeyboardMarkup(join_btn),
+                                    parse_mode='HTML'
+                                )
+                            count += 1
+                        except Exception as e:
+                            logging.warning(f"Failed to send to {telegram_id}: {e}")
+                
+                await context.bot.send_message(
+                    chat_id=ADMIN_TELEGRAM_ID,
+                    text=f"✅ <b>Event Live!</b>\n\nBroadcast sent to {count} users.",
+                    parse_mode='HTML'
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=ADMIN_TELEGRAM_ID,
+                    text=f"❌ API Error: {api_result.get('error', 'Unknown error')}"
+                )
+        else:
+            await context.bot.send_message(
+                chat_id=ADMIN_TELEGRAM_ID,
+                text="❌ Admin not registered in backend. Please register first."
+            )
+        
+        UserSession.clear_draft(context)
+        await show_main_menu(update, context)
+        
+    except Exception as e:
+        logging.error(f"Error in confirm_post: {e}")
+        await context.bot.send_message(chat_id=ADMIN_TELEGRAM_ID, text=f"❌ Error: {e}")
+    
+    return ConversationHandler.END
+
+# ================= 4. MAIN =================
+
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    
+    # Registration conversation handler
+    reg_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(start_registration, pattern="^role_")],
+        states={
+            INPUT_EMAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_email)],
+            INPUT_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_password)],
+            INPUT_CARE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_caregiver_name)]
+        },
+        fallbacks=[CommandHandler("start", show_main_menu)]
+    )
+    
+    # Admin upload conversation handler
+    upload_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex("^📤 Upload Poster$"), admin_start_upload),
+            CallbackQueryHandler(admin_start_upload, pattern="^admin_upload")
+        ],
+        states={
+            UPLOAD_POSTER: [
+                MessageHandler(filters.PHOTO, handle_poster),
+                CallbackQueryHandler(admin_confirm_post, pattern="^(confirm_post|cancel_post)$")
+            ]
+        },
+        fallbacks=[CommandHandler("start", show_main_menu)]
+    )
+    
+    # Add handlers
+    app.add_handler(reg_handler)
+    app.add_handler(upload_handler)
+    app.add_handler(CommandHandler("start", show_main_menu))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_clicks))
+    app.add_handler(CallbackQueryHandler(show_activity_details, pattern="^activity_"))
+    app.add_handler(CallbackQueryHandler(join_event_callback, pattern="^join_"))
+    app.add_handler(CallbackQueryHandler(handle_back_to_events, pattern="^back_to_events$"))
+    
+    print("🚀 CareConnect Hub Bot is running...")
+    print(f"📡 Backend API: {BACKEND_API_URL}")
+    print(f"👑 Admin ID: {ADMIN_TELEGRAM_ID}")
+    app.run_polling(drop_pending_updates=True)
