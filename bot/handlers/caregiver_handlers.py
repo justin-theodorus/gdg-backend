@@ -175,9 +175,9 @@ async def view_participant_schedule(update: Update, context: ContextTypes.DEFAUL
     else:
         text = "📅 <b>UPCOMING SCHEDULE</b>\n\n"
         keyboard = []
-        
+
         for booking in bookings[:10]:
-            activity = booking.get('activity', {})
+            activity = booking.get('activity') or {}
             title = activity.get('title', 'Untitled')
             date_str = format_datetime_short(activity.get('start_datetime', ''))
             location = activity.get('location', 'TBA')
@@ -339,7 +339,7 @@ async def show_all_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE, 
             
             if bookings:
                 for booking in bookings[:3]:
-                    activity = booking.get('activity', {})
+                    activity = booking.get('activity') or {}
                     title = activity.get('title', 'Untitled')
                     date_str = format_datetime_short(activity.get('start_datetime', ''))
                     text += f"  • {title} - {date_str}\n"

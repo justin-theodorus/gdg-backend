@@ -257,15 +257,15 @@ class CareConnectAPI:
         """Cancel a booking."""
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
-                response = await client.post(
+                response = await client.put(
                     f'{self.base_url}/bookings/{booking_id}/cancel',
                     headers=self._get_headers(token)
                 )
                 data = response.json()
-                
+
                 if response.status_code == 200 and data.get('success'):
                     return {'success': True}
-                
+
                 error_msg = data.get('error', {}).get('message', 'Cancellation failed')
                 return {'success': False, 'error': error_msg}
             except Exception as e:

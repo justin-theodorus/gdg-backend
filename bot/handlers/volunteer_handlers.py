@@ -393,7 +393,7 @@ async def show_my_assignments(update: Update, context: ContextTypes.DEFAULT_TYPE
     if invited:
         text += f"🟡 <b>PENDING INVITATION ({len(invited)})</b>\n"
         for a in invited[:3]:
-            activity = a.get('activity', {})
+            activity = a.get('activity') or {}
             title = activity.get('title', 'Untitled')
             date_str = format_datetime_short(activity.get('start_datetime', ''))
             role = a.get('role', 'assistant').title()
@@ -411,7 +411,7 @@ async def show_my_assignments(update: Update, context: ContextTypes.DEFAULT_TYPE
     if confirmed:
         text += f"\n🔵 <b>CONFIRMED ({len(confirmed)})</b>\n"
         for a in confirmed[:3]:
-            activity = a.get('activity', {})
+            activity = a.get('activity') or {}
             title = activity.get('title', 'Untitled')
             date_str = format_datetime_short(activity.get('start_datetime', ''))
             role = a.get('role', 'assistant').title()

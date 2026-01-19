@@ -1100,9 +1100,9 @@ async def admin_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE)
             }
             
             api_result = await api.create_activity(token, activity_data)
-            
+
             if api_result.get('success'):
-                activity = api_result.get('activity', {})
+                activity = api_result.get('activity') or {}
                 activity_id = activity.get('id')
                 
                 # 4. Broadcast to all users with telegram_id

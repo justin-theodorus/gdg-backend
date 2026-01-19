@@ -52,7 +52,7 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE, a
     past = []
     
     for booking in bookings:
-        activity = booking.get('activity', {})
+        activity = booking.get('activity') or {}
         start_dt_str = activity.get('start_datetime', '')
         try:
             start_dt = datetime.fromisoformat(start_dt_str.replace('Z', '+00:00'))
@@ -72,7 +72,7 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE, a
     if upcoming:
         text += f"🔵 <b>UPCOMING ({len(upcoming)})</b>\n"
         for booking in upcoming[:5]:  # Limit to 5
-            activity = booking.get('activity', {})
+            activity = booking.get('activity') or {}
             title = activity.get('title', 'Untitled')
             date_str = format_datetime_short(activity.get('start_datetime', ''))
             text += f"• {title} - {date_str}\n"
@@ -90,7 +90,7 @@ async def show_my_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE, a
     if past:
         text += f"🟢 <b>PAST ({len(past)})</b>\n"
         for booking in past[:5]:  # Limit to 5
-            activity = booking.get('activity', {})
+            activity = booking.get('activity') or {}
             title = activity.get('title', 'Untitled')
             date_str = format_datetime_short(activity.get('start_datetime', ''))
             
@@ -126,9 +126,9 @@ async def show_booking_details(update: Update, context: ContextTypes.DEFAULT_TYP
     if not booking:
         await query.edit_message_text("❌ Booking not found.")
         return
-    
-    activity = booking.get('activity', {})
-    program = activity.get('program', {})
+
+    activity = booking.get('activity') or {}
+    program = activity.get('program') or {}
     
     text = (
         f"📋 <b>BOOKING DETAILS</b>\n\n"
@@ -227,7 +227,7 @@ async def show_waitlist_status(update: Update, context: ContextTypes.DEFAULT_TYP
     keyboard = []
     
     for i, entry in enumerate(entries, 1):
-        activity = entry.get('activity', {})
+        activity = entry.get('activity') or {}
         title = activity.get('title', 'Untitled')
         date_str = format_datetime_short(activity.get('start_datetime', ''))
         position = entry.get('position', '?')

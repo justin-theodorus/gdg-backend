@@ -148,7 +148,7 @@ class NotificationScheduler:
         
         for assignment in assignments:
             try:
-                activity = assignment.get('activity', {})
+                activity = assignment.get('activity') or {}
                 start_dt = datetime.fromisoformat(activity.get('start_datetime', '').replace('Z', '+00:00'))
                 
                 if tomorrow_start <= start_dt.replace(tzinfo=None) < tomorrow_end:
@@ -182,7 +182,7 @@ class NotificationScheduler:
         
         for assignment in assignments:
             try:
-                activity = assignment.get('activity', {})
+                activity = assignment.get('activity') or {}
                 start_dt = datetime.fromisoformat(activity.get('start_datetime', '').replace('Z', '+00:00'))
                 start_dt = start_dt.replace(tzinfo=None)
                 

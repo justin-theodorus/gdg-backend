@@ -36,11 +36,34 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
     return errorResponse('ALREADY_CANCELLED', 'Booking is already cancelled', 400)
   }
 
-  // Check permissions (own booking or staff)
+  // Check permissions (own booking, linked caregiver, or staff)
   const isOwner = booking.participant?.user_id === auth.userId
   const isStaff = permissions.canViewAllBookings(auth.role)
 
-  if (!isOwner && !isStaff) {
+  // Check if user is a caregiver linked to this participant
+  let isLinkedCaregiver = false
+  if (auth.role === 'caregiver') {
+    // First get the caregiver's caregiver_id from their user_id
+    const { data: caregiver } = await supabase
+      .from('caregivers')
+      .select('id')
+      .eq('user_id', auth.userId)
+      .single()
+
+    if (caregiver) {
+      // Then check if this caregiver is linked to the participant with cancel permission
+      const { data: caregiverLink } = await supabase
+        .from('participant_caregivers')
+        .select('id, can_cancel')
+        .eq('participant_id', booking.participant_id)
+        .eq('caregiver_id', caregiver.id)
+        .single()
+
+      isLinkedCaregiver = !!caregiverLink && caregiverLink.can_cancel
+    }
+  }
+
+  if (!isOwner && !isStaff && !isLinkedCaregiver) {
     return errors.forbidden('Cannot cancel this booking')
   }
 
