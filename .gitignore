@@ -42,3 +42,5 @@ next-env.d.ts
 
 service_account.json
 __pycache__/
+.mcp.json
+scripts/

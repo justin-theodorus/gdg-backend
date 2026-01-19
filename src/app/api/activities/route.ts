@@ -93,6 +93,17 @@ export async function POST(request: NextRequest) {
     return errors.forbidden('Only staff can create activities')
   }
 
+  // Verify user exists in database
+  const { data: userExists } = await supabase
+    .from('users')
+    .select('id')
+    .eq('id', auth.userId)
+    .single()
+
+  if (!userExists) {
+    return errorResponse('INVALID_TOKEN', 'Your session is invalid. Please log in again.', 401)
+  }
+
   const body = await parseBody(request)
   if (!body) {
     return errorResponse('VALIDATION_ERROR', 'Invalid JSON body', 400)

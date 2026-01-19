@@ -27,7 +27,7 @@ const telegramRegisterSchema = z.object({
 
 // POST /api/auth/telegram - Login with Telegram ID or register new user
 export async function POST(request: NextRequest) {
-  const body = await parseBody(request)
+  const body = await parseBody(request) as { action?: string } & Record<string, unknown>
   if (!body) {
     return errorResponse('VALIDATION_ERROR', 'Invalid JSON body', 400)
   }
@@ -52,7 +52,7 @@ async function handleTelegramLogin(body: Record<string, unknown>) {
   const validation = telegramLoginSchema.safeParse(body)
   if (!validation.success) {
     return errorResponse('VALIDATION_ERROR', 'Invalid input data', 400, {
-      errors: validation.error.errors,
+      errors: validation.error.issues,
     })
   }
 
@@ -73,9 +73,10 @@ async function handleTelegramLogin(body: Record<string, unknown>) {
     return errorResponse('ACCOUNT_DISABLED', 'This account has been disabled', 403)
   }
 
-  // Get participant/caregiver ID if applicable
+  // Get participant/caregiver/volunteer ID if applicable
   let participant_id = null
   let caregiver_id = null
+  let volunteer_id = null
 
   if (user.role === 'participant') {
     const { data: participant } = await supabase
@@ -91,6 +92,13 @@ async function handleTelegramLogin(body: Record<string, unknown>) {
       .eq('user_id', user.id)
       .single()
     caregiver_id = caregiver?.id
+  } else if (user.role === 'volunteer') {
+    const { data: volunteer } = await supabase
+      .from('volunteers')
+      .select('id')
+      .eq('user_id', user.id)
+      .single()
+    volunteer_id = volunteer?.id
   }
 
   // Generate JWT token
@@ -106,6 +114,7 @@ async function handleTelegramLogin(body: Record<string, unknown>) {
       ...user,
       participant_id,
       caregiver_id,
+      volunteer_id,
     },
     token,
   })
@@ -116,7 +125,7 @@ async function handleTelegramRegister(body: Record<string, unknown>) {
   const validation = telegramRegisterSchema.safeParse(body)
   if (!validation.success) {
     return errorResponse('VALIDATION_ERROR', 'Invalid input data', 400, {
-      errors: validation.error.errors,
+      errors: validation.error.issues,
     })
   }
 
@@ -169,6 +178,7 @@ async function handleTelegramRegister(body: Record<string, unknown>) {
   // Create role-specific profile
   let participant_id = null
   let caregiver_id = null
+  let volunteer_id = null
 
   if (role === 'participant') {
     const { data: participant } = await supabase
@@ -185,7 +195,12 @@ async function handleTelegramRegister(body: Record<string, unknown>) {
       .single()
     caregiver_id = caregiver?.id
   } else if (role === 'volunteer') {
-    await supabase.from('volunteers').insert({ user_id: user.id })
+    const { data: volunteer } = await supabase
+      .from('volunteers')
+      .insert({ user_id: user.id })
+      .select('id')
+      .single()
+    volunteer_id = volunteer?.id
   }
 
   // Generate JWT token
@@ -200,6 +215,7 @@ async function handleTelegramRegister(body: Record<string, unknown>) {
       ...user,
       participant_id,
       caregiver_id,
+      volunteer_id,
     },
     token,
   }, 201)
@@ -210,7 +226,7 @@ async function handleTelegramLink(body: Record<string, unknown>) {
   const validation = telegramLinkSchema.safeParse(body)
   if (!validation.success) {
     return errorResponse('VALIDATION_ERROR', 'Invalid input data', 400, {
-      errors: validation.error.errors,
+      errors: validation.error.issues,
     })
   }
 
