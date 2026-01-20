@@ -4,6 +4,10 @@
 
 CareConnect Hub is a comprehensive activity management system designed for special needs care centers. It connects participants, caregivers (family members), volunteers, and staff through an intelligent platform that combines a Telegram bot interface with a powerful staff dashboard.
 
+## 🎯 Problem Statement
+
+**Problem Statement by MINDS:** How might we reduce friction in activity sign-ups for both individuals and caregivers, while reducing manual effort for staff in managing and consolidating registration data?
+
 ## 🌟 Key Features
 
 ### For Participants & Caregivers (Telegram Bot)
@@ -140,7 +144,7 @@ After seeding, you can log in with:
 
 **Staff Account:**
 - Email: `staff@careconnect.test`
-- Password: `demo1234`
+- Password: `Staff123!`
 
 **Test Participants/Volunteers:**
 - Email: `sarah.chen@demo.com` (Volunteer)
